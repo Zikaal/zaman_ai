@@ -29,7 +29,7 @@ db.init_app(app)
 
 CORS(app, resources={
     r"/*": {
-        "origins": ["https://zaman-bank.vercel.app", "http://localhost:3000"],
+        "origins": ["https://zaman-bank.vercel.app", "http://localhost:3000", "https://openai-hub.neuraldeep.tech/v1-A"],
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True
