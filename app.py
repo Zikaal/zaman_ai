@@ -14,11 +14,9 @@ import traceback
 import time
 import re
 from decimal import Decimal
-
-import os
 app = Flask(__name__)
 CORS(app)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL") 
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres.decwxdskxcrehiauwjyq:fLXxkf42l6NtY@aws-1-us-east-2.pooler.supabase.com:6543/postgres'  
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.secret_key = 'super_secret_key'
 db.init_app(app)
@@ -30,8 +28,8 @@ bcrypt = Bcrypt(app)
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-API_BASE = os.getenv("API_BASE")
-API_KEY = os.getenv("API_KEY")
+API_BASE = 'https://openai-hub.neuraldeep.tech/v1'
+API_KEY = 'sk-roG3OusRr0TLCHAADks6lw'
 HEADERS = {'Authorization': f'Bearer {API_KEY}'}
 
 # ========== HELPERS ==========
