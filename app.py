@@ -14,41 +14,14 @@ import traceback
 import time
 import re
 from decimal import Decimal
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-from dotenv import load_dotenv
 import os
-
-from google import genai
-from google.genai import types
-
-load_dotenv()
-
 app = Flask(__name__)
 CORS(app)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL")
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL") 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.secret_key = os.getenv('SECRET_KEY', 'super_secret_key')
+app.secret_key = 'super_secret_key'
 db.init_app(app)
-
-CORS(app, resources={
-    r"/*": {
-        "origins": ["https://zaman-bank.vercel.app", "http://localhost:3000"],
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
-    }
-})
-
-@app.before_request
-def handle_preflight():
-    if request.method == 'OPTIONS':
-        response = jsonify({'status': 'ok'})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-        return response, 200
 
 login_manager = LoginManager(app)
 bcrypt = Bcrypt(app)
@@ -57,230 +30,103 @@ bcrypt = Bcrypt(app)
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-# Инициализация Gemini API
-GEMINI_API_KEY = "AIzaSyBEFv1ElxffQM7cojxrsmKICsHAp8z7i-A"
-
-if not GEMINI_API_KEY:
-    print("⚠️  WARNING: GEMINI_API_KEY not set in environment variables!")
-
-try:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    print("✓ Gemini client initialized successfully")
-except Exception as e:
-    print(f"✗ Failed to initialize Gemini Client: {e}")
-    gemini_client = None
-
-def create_session():
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504]
-    )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    return session
-
-requests_session = create_session()
+API_BASE = os.getenv("API_BASE")
+API_KEY = os.getenv("API_KEY")
+HEADERS = {'Authorization': f'Bearer {API_KEY}'}
 
 # ========== HELPERS ==========
 def cosine_similarity(a, b):
     try:
-        if not a or not b:
-            return 0.0
-        a_norm = np.array(a, dtype=float) / (np.linalg.norm(a) + 1e-10)
-        b_norm = np.array(b, dtype=float) / (np.linalg.norm(b) + 1e-10)
+        a_norm = np.array(a) / (np.linalg.norm(a) + 1e-10)
+        b_norm = np.array(b) / (np.linalg.norm(b) + 1e-10)
         return float(np.dot(a_norm, b_norm))
-    except Exception as e:
-        print(f"Cosine similarity error: {e}")
+    except Exception:
         return 0.0
 
 def get_embedding(text, retries=3):
-    """Получить embedding через SDK (более надежно)"""
-    if not text or not isinstance(text, str):
-        return [0] * 768 
-    
-    if not gemini_client:
-        print("ERROR: Gemini client not initialized")
-        return [0] * 768
-    
-    text = text[:3072].strip()
-    
     for attempt in range(retries):
         try:
-            response = gemini_client.models.embed_content(
-                model='text-embedding-004',
-                content=text,
-                config=types.EmbedContentConfig(
-                    task_type='RETRIEVAL_DOCUMENT'
-                )
-            )
-            
-            if hasattr(response, 'embedding') and response.embedding:
-                return list(response.embedding)
-            
-            print(f"Embedding attempt {attempt+1}: Empty response")
-            time.sleep(1 + attempt)
-            
+            payload = {"model": "text-embedding-3-small", "input": text}
+            response = requests.post(f"{API_BASE}/embeddings", headers=HEADERS, json=payload, timeout=30)
+            if response.status_code == 200:
+                return response.json()['data'][0]['embedding']
+            print(f"Embedding attempt {attempt+1}: Status {response.status_code}")
+            time.sleep(2)
         except Exception as e:
-            print(f"Embedding attempt {attempt+1} error: {type(e).__name__}: {e}")
-            time.sleep(1 + attempt)
-                
-    print("ERROR: Could not get embedding after retries")
-    return [0] * 768
+            print(f"Embedding attempt {attempt+1} error: {e}")
+            time.sleep(2)
+    return [0] * 1536
 
 def get_product_recommendations(user_message):
     try:
-        if not user_message:
-            return "Пожалуйста, опишите ваши финансовые потребности."
-        
         user_emb = get_embedding(user_message)
-        if np.allclose(user_emb, [0] * len(user_emb), atol=1e-5):
-            print("WARNING: User embedding is nearly zero")
-            return "Рекомендуем обновить ваш профиль для лучших рекомендаций."
-            
-        products = Product.query.limit(50).all() 
-        
+        products = Product.query.all()
         if not products:
-            return "В базе нет доступных продуктов. Попробуйте позже."
-        
+            return "Нет продуктов в базе Supabase. Заполните таблицу products для рекомендаций."
+
         user_lower = user_message.lower()
         type_matches = []
-        if any(word in user_lower for word in ['депозит', 'сбережения', 'накопления', 'инвестиции']):
-            type_matches = [p for p in products if 'депозит' in p.type.lower() or 'сбережения' in p.type.lower()]
-        elif any(word in user_lower for word in ['ипотека', 'квартира', 'жилье', 'финансирование', 'мурабаха']):
-            type_matches = [p for p in products if 'ипотека' in p.type.lower() or 'финансирование' in p.type.lower()]
-        elif any(word in user_lower for word in ['бизнес', 'карта', 'расчетный', 'платежный']):
-            type_matches = [p for p in products if 'кредит' in p.type.lower() or 'мурабаха' in p.type.lower()]
+        if any(word in user_lower for word in ['депозит', 'сбережения', 'накопления', 'инвестиции', 'овернайт', 'выгодный']):
+            type_matches = [p for p in products if 'депозитный' in p.type.lower()]
+        elif any(word in user_lower for word in ['ипотека', 'квартира', 'жилье', 'покупка', 'финансирование', 'рассрочка']):
+            type_matches = [p for p in products if 'финансирование' in p.type.lower() or 'ипотека' in p.name.lower()]
+        elif any(word in user_lower for word in ['бизнес', 'карта', 'овер', 'кредит', 'платежный', 'тариф', 'расчёт']):
+            type_matches = [p for p in products if 'кредит' in p.type.lower() or 'платежный' in p.type.lower() or 'расчётно' in p.type.lower() or 'бизнес' in p.name.lower()]
         else:
             type_matches = products
 
         scores = []
-        
-        for prod in type_matches[:15]: 
-            try:
-                prod_desc = f"{prod.name} {prod.type} {prod.description or ''}".lower()
-                prod_emb = get_embedding(prod_desc)
-                
-                if np.allclose(prod_emb, [0] * len(prod_emb), atol=1e-5):
-                    continue 
-                    
-                score = cosine_similarity(user_emb, prod_emb)
-                
-                if score > 0.10:
-                    yield_text = f"доходность {prod.expected_yield}%" if prod.expected_yield else ""
-                    reason = f"{prod.name} ({prod.type}) — {yield_text} (score: {score:.2f})"
-                    scores.append((prod, score, reason))
-                    
-            except Exception as e:
-                print(f"Product processing error: {e}")
-                continue
-                
+        for prod in type_matches:
+            prod_desc = f"{prod.name} {prod.type} {prod.description}".lower()
+            prod_emb = get_embedding(prod_desc)
+            score = cosine_similarity(user_emb, prod_emb)
+            if score > 0.2:
+                yield_text = f"доходность {prod.expected_yield}" if prod.expected_yield else ""
+                markup_text = f"наценка от {prod.min_markup} тг" if hasattr(prod, 'min_markup') else ""
+                reason = f"{prod.name} ({prod.type}) — {yield_text}, {markup_text} (score: {score:.2f}). Шариат-compliant."
+                scores.append((prod, score, reason))
+
         scores.sort(key=lambda x: x[1], reverse=True)
-        top_products = scores[:2] 
-        
+        top_products = scores[:2] if scores else []
+
         if top_products:
             rec_text = "; ".join([reason for _, _, reason in top_products])
             return f"Рекомендации: {rec_text}"
-            
-        return "Нет подходящих продуктов для вашего запроса."
-        
+        return "Нет подходящих продуктов в Supabase для вашего запроса."
     except Exception as e:
         print(f"Recommendation error: {e}")
-        traceback.print_exc()
-        return "Ошибка при анализе продуктов."
+        return "Ошибка при анализе продуктов. Попробуйте позже."
 
-def llm_chat(messages, empathetic=True, user_id=None, retries=2):
-    """LLM chat с Gemini SDK"""
-    if not messages:
-        return "Нет сообщений для обработки."
-    
-    if not gemini_client:
-        return "Ошибка: AI ассистент временно недоступен."
-    
-    prompt = (
-        "Ты empathetic AI-ассистент банка Zaman, говори на русском. "
-        "Используй исламские термины (Мурабаха вместо кредит). "
-        "**ОБЯЗАТЕЛЬНО** проанализируй данные в тегах <КОНТЕКСТ_РЕКОМЕНДАЦИЙ>. "
-        "Предложи 1-2 продукта, которые ты нашел в <КОНТЕКСТ_РЕКОМЕНДАЦИЙ>, если они присутствуют. "
-        "Если тегов <КОНТЕКСТ_РЕКОМЕНДАЦИЙ> нет или они пустые, закончи советы без упоминания продуктов. "
-        "Отвечай вежливо и кратко."
-    )
-    
-    user_message_with_system = ""
-    if empathetic and messages and messages[0].get('role') == 'user':
-        user_message_with_system = f"{prompt}\n\n{messages[0]['content']}"
-    
-    rec_text = ""
-    if messages and messages[-1]['role'] == 'user':
-        user_input_for_rec = messages[-1]['content']
-        try:
-            rec_text = get_product_recommendations(user_input_for_rec)
-            
-            if rec_text and "Рекомендации" in rec_text:
-                clean_rec_data = rec_text.replace("Рекомендации: ", "").strip()
-                context_to_add = f"\n\n<КОНТЕКСТ_РЕКОМЕНДАЦИЙ>{clean_rec_data}</КОНТЕКСТ_РЕКОМЕНДАЦИЙ>"
-
-                if user_message_with_system:
-                    user_message_with_system += context_to_add
-                elif messages[-1]['role'] == 'user':
-                    messages[-1]['content'] += context_to_add
-
-        except Exception as e:
-            print(f"Recommendations error: {e}")
-
-    gemini_messages = []
-    for i, msg in enumerate(messages):
-        role = 'user' if msg.get('role') == 'user' else 'model'
-        content = msg.get('content')
-        
-        if i == 0 and role == 'user' and user_message_with_system:
-            content = user_message_with_system
-        
-        gemini_messages.append(types.Content(
-            role=role,
-            parts=[types.Part.from_text(content)]
-        ))
-    
-    if not gemini_messages:
-        return "Нет сообщений для обработки."
-
+def llm_chat(messages, empathetic=True, user_id=None, retries=3):
     for attempt in range(retries):
         try:
-            response = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=gemini_messages,
-                config=types.GenerateContentConfig(
-                    temperature=0.5,
-                    max_output_tokens=6024
-                )
-            )
-            
-            ai_response = response.text.strip() if response.text else "Не удалось получить ответ."
-            
-            if user_id and messages[-1]['role'] == 'user':
-                try:
-                    clean_user_message = re.sub(r'<КОНТЕКСТ_РЕКОМЕНДАЦИЙ>.*?</КОНТЕКСТ_РЕКОМЕНДАЦИЙ>', '', messages[-1]['content'], flags=re.DOTALL).strip()
-                    
+            prompt = "Ты empathetic AI-ассистент банка Zaman, говори на русском, используй исламские термины (Мурабаха вместо кредит, без риба/процентов). Будь человечным, мотивируй, предлагай альтернативы стрессу (медитация, не траты). Анализируй цели/привычки персонально. Сначала дай общие советы по запросу пользователя (например, планирование бюджета, терпение, медитация). В конце предложи 1-2 подходящих продукта из базы Supabase, объясняя, почему они подходят (доходность, сроки, суммы, шариат-compliant). Используй ТОЛЬКО продукты из рекомендаций, не придумывай новые. Если подходящих нет, закончи советы без упоминания продуктов."
+            if empathetic:
+                messages.insert(0, {"role": "system", "content": prompt})
+
+            if messages and messages[-1]['role'] == 'user':
+                user_message = messages[-1]['content']
+                rec_text = get_product_recommendations(user_message)
+                messages[0]["content"] += f"\n{rec_text}. Начни с общих советов, затем, если есть рекомендации, предложи 1-2 продукта в конце с обоснованием."
+
+            payload = {"model": "gpt-4o-mini", "messages": messages, "temperature": 0.5}
+            response = requests.post(f"{API_BASE}/chat/completions", headers=HEADERS, json=payload, timeout=30)
+            if response.status_code == 200:
+                ai_response = response.json()['choices'][0]['message']['content']
+                if user_id:
                     history = ChatHistory(
                         user_id=user_id,
-                        user_message=clean_user_message,
+                        user_message=messages[-1]['content'] if messages[-1]['role'] == 'user' else "Системное",
                         ai_response=ai_response
                     )
                     db.session.add(history)
                     db.session.commit()
-                except Exception as db_error:
-                    print(f"Database save error: {db_error}")
-                    db.session.rollback()
-                    
-            return ai_response
-            
+                return ai_response
+            print(f"LLM attempt {attempt+1}: Status {response.status_code}")
+            time.sleep(2)
         except Exception as e:
-            print(f"LLM error attempt {attempt+1}: {type(e).__name__}: {e}")
-            if attempt < retries - 1:
-                time.sleep(2)
-                
+            print(f"LLM attempt {attempt+1} error: {e}")
+            time.sleep(2)
     return "Извините, не удалось получить ответ. Попробуйте позже."
 
 # ========== ROUTES ==========
@@ -326,7 +172,7 @@ def chat():
     try:
         data = request.json
         messages = data.get('messages', [])
-        user_id = data.get('user_id')
+        user_id = data.get('user_id', 'default_user')
         if not messages:
             return jsonify({'error': 'messages required'}), 400
         response = llm_chat(messages, user_id=user_id)
@@ -342,40 +188,18 @@ def transcribe():
         if 'file' not in request.files:
             return jsonify({'error': 'No audio file'}), 400
         
-        if not gemini_client:
-            return jsonify({'error': 'AI service unavailable'}), 503
-        
         audio_file = request.files['file']
-        audio_bytes = audio_file.read()
-        mime_type = audio_file.mimetype or 'audio/mpeg'
+        files = {'file': (audio_file.filename, audio_file, 'audio/mpeg')}
+        data_payload = {'model': 'whisper-1'}
         
-        if len(audio_bytes) > (20 * 1024 * 1024):
-            return jsonify({'error': 'Audio file is too large (max 20MB)'}), 400
-
-        prompt_parts = [
-            "Transcribe the audio provided below. Only output the text of the transcription.",
-            types.Part.from_bytes(
-                data=audio_bytes,
-                mime_type=mime_type,
-            ),
-        ]
-
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt_parts,
-            config=types.GenerateContentConfig(temperature=0.0)
-        )
-
-        text = response.text.strip() if response.text else ""
-        
-        if not text:
-            return jsonify({'error': 'Transcription failed'}), 500
-
-        user_id = request.args.get('user_id')
-        chat_resp = llm_chat([{"role": "user", "content": text}], user_id=user_id)
-        
-        return jsonify({'transcribed': text, 'response': chat_resp}), 200
-
+        response = requests.post(f"{API_BASE}/audio/transcriptions", headers=HEADERS, files=files, data=data_payload, timeout=30)
+        if response.status_code == 200:
+            text = response.json()['text']
+            user_id = request.args.get('user_id', 'transcribe_user')
+            chat_resp = llm_chat([{"role": "user", "content": text}], user_id=user_id)
+            return jsonify({'transcribed': text, 'response': chat_resp}), 200
+        else:
+            return jsonify({'error': response.text}), 500
     except Exception as e:
         print(f"Transcribe error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -407,7 +231,7 @@ def set_goal():
 def add_expense():
     try:
         data = request.json
-        amount = Decimal(str(data.get('amount', 0)))
+        amount = Decimal(str(data.get('amount', 0)))  # Convert float to Decimal
         trans = Transaction(
             user_id=current_user.id,
             type='expense',
@@ -416,7 +240,7 @@ def add_expense():
             description=data.get('description')
         )
         db.session.add(trans)
-        current_user.balance -= amount
+        current_user.balance -= amount  # Now both are Decimal
         db.session.commit()
         expense_text = f"Добавлен расход: {data.get('category', 'неизвестно')} на {data.get('amount', 0)} тг."
         messages = [{"role": "user", "content": expense_text}]
@@ -432,16 +256,16 @@ def add_expense():
 def add_income():
     try:
         data = request.json
-        amount = Decimal(str(data.get('amount', 0)))
+        amount = Decimal(str(data.get('amount', 0)))  # Convert to Decimal
         trans = Transaction(
             user_id=current_user.id,
             type='income',
-            amount=amount,
+            amount=amount,  # Use Decimal for consistency
             category=data.get('category'),
             description=data.get('description')
         )
         db.session.add(trans)
-        current_user.balance += amount
+        current_user.balance += amount  # Now both are Decimal
         db.session.commit()
         income_text = f"Добавлен доход: {data.get('category', 'неизвестно')} на {data.get('amount', 0)} тг."
         messages = [{"role": "user", "content": income_text}]
@@ -513,49 +337,6 @@ def visualize():
         return jsonify({'chart': None}), 200
     except Exception as e:
         print(f"Visualize error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/visualize_goal_progress', methods=['GET'])
-@login_required
-def visualize_goal_progress():
-    try:
-        goals = Goal.query.filter_by(user_id=current_user.id).all()
-        if not goals:
-            return jsonify({'error': 'No goals found for the user'}), 404
-
-        data = []
-        for goal in goals:
-            accumulated = float(current_user.balance)
-            remaining = float(goal.cost) - accumulated if float(goal.cost) > accumulated else 0
-            data.append({
-                'goal_type': goal.goal_type,
-                'accumulated': accumulated if accumulated > 0 else 0,
-                'remaining': remaining,
-                'total': float(goal.cost)
-            })
-
-        df = pd.DataFrame(data)
-        if df.empty:
-            return jsonify({'error': 'No valid goal data to visualize'}), 404
-
-        fig = px.bar(
-            df,
-            x='goal_type',
-            y=['accumulated', 'remaining'],
-            title='Progress Towards Goals',
-            labels={'value': 'Amount (KZT)', 'goal_type': 'Goal Type', 'variable': 'Status'},
-            barmode='stack'
-        )
-        fig.update_layout(
-            yaxis_title="Amount (KZT)",
-            xaxis_title="Goal Type",
-            legend_title="Progress Status"
-        )
-
-        return jsonify({'chart': pio.to_json(fig)}), 200
-    except Exception as e:
-        print(f"Visualize goal progress error: {e}")
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/compare')
