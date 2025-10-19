@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Zaman AI Test</title>
+    <script src="https://cdn.plot.ly/plotly-3.1.2.min.js"></script> <!-- Обновлено до актуальной версии -->
+</head>
+<body>
+    <h1>Тест Backend</h1>
+    
+    <!-- Чат -->
+    <form id="chat-form">
+        <input type="text" id="user-id" placeholder="User ID" value="1">
+        <input type="text" id="chat-input" placeholder="Сообщение...">
+        <button type="submit">Отправить</button>
+    </form>
+    <div id="chat-response"></div>
+    
+    <!-- Транскрипция -->
+    <form id="transcribe-form" enctype="multipart/form-data">
+        <input type="text" id="transcribe-user-id" placeholder="User ID" value="1">
+        <input type="file" id="audio-file" accept="audio/*">
+        <button type="submit">Транскрибировать</button>
+    </form>
+    <div id="transcribe-response"></div>
+    
+    <!-- Установить цель -->
+    <form id="goal-form">
+        <input type="text" id="goal-user-id" placeholder="User ID" value="1">
+        <input type="text" id="goal-type" placeholder="Тип цели (квартира)">
+        <input type="number" id="goal-cost" placeholder="Стоимость (тенге)" value="10000000">
+        <input type="number" id="goal-timeline" placeholder="Срок (мес)" value="60">
+        <button type="submit">Установить Цель</button>
+    </form>
+    <div id="goal-response"></div>
+    
+    <!-- Добавить расход -->
+    <form id="expense-form">
+        <input type="text" id="exp-user-id" placeholder="User ID" value="1">
+        <input type="text" id="category" placeholder="Категория (еда)">
+        <input type="number" id="amount" placeholder="Сумма">
+        <button type="submit">Добавить Расход</button>
+    </form>
+    <div id="expense-response"></div>
+    
+    <!-- Анализ расходов -->
+    <form id="analyze-form">
+        <input type="text" id="analyze-user-id" placeholder="User ID" value="1">
+        <textarea id="expenses-json" placeholder='[{"category": "еда", "amount": 50000}]'></textarea>
+        <button type="submit">Анализировать</button>
+    </form>
+    <div id="analyze-response"></div>
+    
+    <!-- Продукты -->
+    <button id="products-btn">Показать Продукты</button>
+    <div id="products-response"></div>
+    
+    <!-- Рекомендации -->
+    <input type="text" id="rec-user-id" placeholder="User ID" value="1">
+    <button id="rec-btn">Рекомендации</button>
+    <div id="rec-response"></div>
+    
+    <!-- Визуализация -->
+    <button id="visualize-btn">Визуализировать (User 1)</button>
+    <div id="visualize-chart"></div>
+    
+    <!-- Сравнение -->
+    <button id="compare-btn">Сравнить (User 1)</button>
+    <div id="compare-response"></div>
+    
+    <script>
+        // Чат
+        document.getElementById('chat-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('chat-input').value;
+            const userId = document.getElementById('user-id').value;
+            const res = await fetch('/chat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({messages: [{role: 'user', content: input}], user_id: userId})
+            });
+            const data = await res.json();
+            document.getElementById('chat-response').innerText = data.response || data.error || 'Ошибка';
+        });
+
+        // Транскрипция
+        document.getElementById('transcribe-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', document.getElementById('audio-file').files[0]);
+            const userId = document.getElementById('transcribe-user-id').value;
+            const res = await fetch(`/transcribe?user_id=${userId}`, {method: 'POST', body: formData});
+            const data = await res.json();
+            document.getElementById('transcribe-response').innerText = JSON.stringify(data, null, 2) || 'Ошибка';
+        });
+
+        // Установить цель
+        document.getElementById('goal-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                user_id: document.getElementById('goal-user-id').value,
+                goal_type: document.getElementById('goal-type').value,
+                cost: document.getElementById('goal-cost').value,
+                timeline: document.getElementById('goal-timeline').value
+            };
+            const res = await fetch('/set_goal', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            const resp = await res.json();
+            document.getElementById('goal-response').innerText = JSON.stringify(resp, null, 2) || 'Ошибка';
+        });
+
+        // Добавить расход
+        document.getElementById('expense-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                user_id: document.getElementById('exp-user-id').value,
+                category: document.getElementById('category').value,
+                amount: document.getElementById('amount').value,
+                description: `Расход на ${document.getElementById('category').value}`
+            };
+            const res = await fetch('/add_expense', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            const resp = await res.json();
+            document.getElementById('expense-response').innerText = JSON.stringify(resp, null, 2) || 'Ошибка';
+        });
+
+        // Анализ
+        document.getElementById('analyze-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            let expenses;
+            try {
+                expenses = JSON.parse(document.getElementById('expenses-json').value || '[]');
+            } catch {
+                expenses = [];
+            }
+            const data = {
+                user_id: document.getElementById('analyze-user-id').value,
+                expenses: expenses
+            };
+            const res = await fetch('/analyze_expenses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            const resp = await res.json();
+            document.getElementById('analyze-response').innerText = JSON.stringify(resp, null, 2) || 'Ошибка';
+        });
+
+        // Продукты
+        document.getElementById('products-btn').addEventListener('click', async () => {
+            const res = await fetch('/products');
+            const data = await res.json();
+            document.getElementById('products-response').innerText = JSON.stringify(data, null, 2) || 'Ошибка';
+        });
+
+        // Рекомендации
+        document.getElementById('rec-btn').addEventListener('click', async () => {
+            const userId = document.getElementById('rec-user-id').value;
+            const res = await fetch('/recommendations', {
+                method: 'GET',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const data = await res.json();
+            document.getElementById('rec-response').innerText = JSON.stringify(data, null, 2) || 'Ошибка';
+        });
+
+        // Визуализация
+        document.getElementById('visualize-btn').addEventListener('click', async () => {
+            const res = await fetch('/visualize?user_id=1');
+            const data = await res.json();
+            if (data.chart) {
+                const fig = JSON.parse(data.chart);
+                Plotly.newPlot('visualize-chart', fig.data, fig.layout);
+            } else {
+                document.getElementById('visualize-chart').innerText = 'Нет данных для визуализации';
+            }
+        });
+
+        // Сравнение
+        document.getElementById('compare-btn').addEventListener('click', async () => {
+            const res = await fetch('/compare?user_id=1');
+            const data = await res.json();
+            document.getElementById('compare-response').innerText = data.comparison || data.error || 'Ошибка';
+        });
+    </script>
+</body>
+</html>

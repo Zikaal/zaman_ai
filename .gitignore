@@ -1,41 +1,45 @@
-# Prerequisites
-*.d
+# Python
+# ==================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-file.txt
+.tox/
+.coverage
+.cache
+.pytest_cache/
+htmlcov/
+.ipynb_checkpoints
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+# IDE / Editor Files
+# ==================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
 
-# Precompiled Headers
-*.gch
-*.pch
+# Flask/Database
+# ==================================
+# Секретные ключи и переменные окружения
+.env 
+.flaskenv
 
-# Linker files
-*.ilk
+# Файлы SQLite (если используются)
+*.db
+*.sqlite
+/instance
 
-# Debugger Files
-*.pdb
+# Log files
+# ==================================
+*.log
+/logs
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# debug information files
-*.dwo
+# Uploaded/Generated Files
+# ==================================
+# Если вы кэшируете или сохраняете аудиофайлы
+/uploads/

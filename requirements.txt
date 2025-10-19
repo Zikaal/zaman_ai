@@ -1,0 +1,14 @@
+flask
+flask_sqlalchemy
+sqlalchemy
+flask_cors
+psycopg2-binary
+pandas
+requests
+openpyxl
+plotly
+gunicorn
+flask-bcrypt
+flask-login
+google-genai
+python-dotenv
