@@ -58,7 +58,7 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 # Инициализация Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = "AIzaSyBEFv1ElxffQM7cojxrsmKICsHAp8z7i-A"
 
 if not GEMINI_API_KEY:
     print("⚠️  WARNING: GEMINI_API_KEY not set in environment variables!")
