@@ -20,7 +20,6 @@ from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 import os
 
-# Импорты для Gemini SDK
 from google import genai
 from google.genai import types
 
@@ -30,7 +29,7 @@ app = Flask(__name__)
 CORS(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL")
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.secret_key = 'super_secret_key'
+app.secret_key = os.getenv('SECRET_KEY', 'super_secret_key')
 db.init_app(app)
 
 CORS(app, resources={
@@ -60,18 +59,15 @@ def load_user(user_id):
 
 # Инициализация Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1'
-GEMINI_CHAT_MODEL = 'gemini-2.5-flash'
-GEMINI_EMBEDDING_MODEL = 'text-embedding-004'
 
-GEMINI_HEADERS = {
-    'Content-Type': 'application/json'
-}
+if not GEMINI_API_KEY:
+    print("⚠️  WARNING: GEMINI_API_KEY not set in environment variables!")
 
 try:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    print("✓ Gemini client initialized successfully")
 except Exception as e:
-    print(f"Failed to initialize Gemini Client: {e}")
+    print(f"✗ Failed to initialize Gemini Client: {e}")
     gemini_client = None
 
 def create_session():
@@ -101,40 +97,37 @@ def cosine_similarity(a, b):
         return 0.0
 
 def get_embedding(text, retries=3):
-    """Получить embedding для Gemini API"""
+    """Получить embedding через SDK (более надежно)"""
     if not text or not isinstance(text, str):
         return [0] * 768 
     
-    text = text[:3072] 
+    if not gemini_client:
+        print("ERROR: Gemini client not initialized")
+        return [0] * 768
+    
+    text = text[:3072].strip()
     
     for attempt in range(retries):
         try:
-            payload = {
-                "model": GEMINI_EMBEDDING_MODEL, 
-                "content": {"parts": [{"text": text}]},
-                "task_type": "RETRIEVAL_DOCUMENT"
-            }
-            url = f"{GEMINI_API_BASE}/models/{GEMINI_EMBEDDING_MODEL}:embedContent?key={GEMINI_API_KEY}"
-            
-            response = requests_session.post(
-                url,
-                headers=GEMINI_HEADERS,
-                json=payload,
-                timeout=15,
-                verify=True
+            response = gemini_client.models.embed_content(
+                model='text-embedding-004',
+                content=text,
+                config=types.EmbedContentConfig(
+                    task_type='RETRIEVAL_DOCUMENT'
+                )
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                if 'embedding' in data and 'values' in data['embedding']:
-                    return data['embedding']['values']
+            if hasattr(response, 'embedding') and response.embedding:
+                return list(response.embedding)
             
-            print(f"Embedding attempt {attempt+1}: Status {response.status_code}")
+            print(f"Embedding attempt {attempt+1}: Empty response")
             time.sleep(1 + attempt)
+            
         except Exception as e:
-            print(f"Embedding attempt {attempt+1} error: {e}")
-            time.sleep(1)
+            print(f"Embedding attempt {attempt+1} error: {type(e).__name__}: {e}")
+            time.sleep(1 + attempt)
                 
+    print("ERROR: Could not get embedding after retries")
     return [0] * 768
 
 def get_product_recommendations(user_message):
@@ -144,8 +137,8 @@ def get_product_recommendations(user_message):
         
         user_emb = get_embedding(user_message)
         if np.allclose(user_emb, [0] * len(user_emb), atol=1e-5):
-            print("ERROR: User embedding is nearly zero.")
-            return "Ошибка: не удалось получить эмбеддинг пользователя."
+            print("WARNING: User embedding is nearly zero")
+            return "Рекомендуем обновить ваш профиль для лучших рекомендаций."
             
         products = Product.query.limit(50).all() 
         
@@ -199,11 +192,12 @@ def get_product_recommendations(user_message):
         return "Ошибка при анализе продуктов."
 
 def llm_chat(messages, empathetic=True, user_id=None, retries=2):
-    """LLM chat с Gemini API"""
+    """LLM chat с Gemini SDK"""
     if not messages:
         return "Нет сообщений для обработки."
     
-    gemini_messages = []
+    if not gemini_client:
+        return "Ошибка: AI ассистент временно недоступен."
     
     prompt = (
         "Ты empathetic AI-ассистент банка Zaman, говори на русском. "
@@ -236,6 +230,7 @@ def llm_chat(messages, empathetic=True, user_id=None, retries=2):
         except Exception as e:
             print(f"Recommendations error: {e}")
 
+    gemini_messages = []
     for i, msg in enumerate(messages):
         role = 'user' if msg.get('role') == 'user' else 'model'
         content = msg.get('content')
@@ -243,66 +238,46 @@ def llm_chat(messages, empathetic=True, user_id=None, retries=2):
         if i == 0 and role == 'user' and user_message_with_system:
             content = user_message_with_system
         
-        gemini_messages.append({
-            "role": role, 
-            "parts": [{"text": content}]
-        })
+        gemini_messages.append(types.Content(
+            role=role,
+            parts=[types.Part.from_text(content)]
+        ))
     
     if not gemini_messages:
         return "Нет сообщений для обработки."
 
     for attempt in range(retries):
         try:
-            payload = {
-                "contents": gemini_messages,
-                "generationConfig": {
-                    "temperature": 0.5,
-                    "maxOutputTokens": 6024
-                }
-            }
-            url = f"{GEMINI_API_BASE}/models/{GEMINI_CHAT_MODEL}:generateContent?key={GEMINI_API_KEY}"
-            
-            response = requests_session.post(
-                url,
-                headers=GEMINI_HEADERS,
-                json=payload,
-                timeout=20,
-                verify=True
+            response = gemini_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=gemini_messages,
+                config=types.GenerateContentConfig(
+                    temperature=0.5,
+                    max_output_tokens=6024
+                )
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                try:
-                    ai_response = data['candidates'][0]['content']['parts'][0]['text']
-                except (KeyError, IndexError) as e:
-                    reason = data['candidates'][0].get('finishReason', 'UNKNOWN')
-                    if reason == 'MAX_TOKENS':
-                        ai_response = "Извините, ответ был обрезан. Пожалуйста, повторите запрос короче."
-                    else:
-                        print(f"Response parsing error with reason: {reason}")
-                        ai_response = "Извините, не удалось обработать ответ модели."
-                        
-                if user_id and messages[-1]['role'] == 'user':
-                    try:
-                        clean_user_message = re.sub(r'<КОНТЕКСТ_РЕКОМЕНДАЦИЙ>.*?</КОНТЕКСТ_РЕКОМЕНДАЦИЙ>', '', messages[-1]['content'], flags=re.DOTALL).strip()
-                        
-                        history = ChatHistory(
-                            user_id=user_id,
-                            user_message=clean_user_message,
-                            ai_response=ai_response
-                        )
-                        db.session.add(history)
-                        db.session.commit()
-                    except Exception as db_error:
-                        print(f"Database save error: {db_error}")
-                        db.session.rollback()
-                        
-                return ai_response
+            ai_response = response.text.strip() if response.text else "Не удалось получить ответ."
             
-            print(f"LLM attempt {attempt+1}: Status {response.status_code}")
-            time.sleep(2)
+            if user_id and messages[-1]['role'] == 'user':
+                try:
+                    clean_user_message = re.sub(r'<КОНТЕКСТ_РЕКОМЕНДАЦИЙ>.*?</КОНТЕКСТ_РЕКОМЕНДАЦИЙ>', '', messages[-1]['content'], flags=re.DOTALL).strip()
+                    
+                    history = ChatHistory(
+                        user_id=user_id,
+                        user_message=clean_user_message,
+                        ai_response=ai_response
+                    )
+                    db.session.add(history)
+                    db.session.commit()
+                except Exception as db_error:
+                    print(f"Database save error: {db_error}")
+                    db.session.rollback()
+                    
+            return ai_response
+            
         except Exception as e:
-            print(f"LLM error attempt {attempt+1}: {e}")
+            print(f"LLM error attempt {attempt+1}: {type(e).__name__}: {e}")
             if attempt < retries - 1:
                 time.sleep(2)
                 
@@ -367,6 +342,9 @@ def transcribe():
         if 'file' not in request.files:
             return jsonify({'error': 'No audio file'}), 400
         
+        if not gemini_client:
+            return jsonify({'error': 'AI service unavailable'}), 503
+        
         audio_file = request.files['file']
         audio_bytes = audio_file.read()
         mime_type = audio_file.mimetype or 'audio/mpeg'
@@ -388,10 +366,10 @@ def transcribe():
             config=types.GenerateContentConfig(temperature=0.0)
         )
 
-        text = response.text.strip()
+        text = response.text.strip() if response.text else ""
         
         if not text:
-            return jsonify({'error': 'Gemini returned empty transcription'}), 500
+            return jsonify({'error': 'Transcription failed'}), 500
 
         user_id = request.args.get('user_id')
         chat_resp = llm_chat([{"role": "user", "content": text}], user_id=user_id)
